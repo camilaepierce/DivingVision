@@ -1,15 +1,11 @@
 import tarfile
 
-#################################
-### Assumed Globals
-#################################
-RGB_TAR = '../data/Diving48_rgb.tar.gz'
-FLOW_TAR = '../data/Diving48_flow.tar.gz'
-
 
 def extract_rgb(rgb_tar=RGB_TAR):
     '''
     Extracts data from RGB data stream. Assumes extracting Diving48 dataset if none given.
+    
+    Expects data in .mp4 format.
     '''
     return tarfile.open(rgb_tar)
 

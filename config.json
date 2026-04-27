@@ -1,0 +1,18 @@
+{   
+    "standard" : {   
+        "name" : "Initial"
+    },
+
+    "training" : {
+        "rgb_data": "../data/Diving48_rgb.tar.gz",
+        "flow_data": "../data/Diving48_flow.tar.gz",
+        "data_split" : "",
+        "epochs" : 50
+    },
+
+    "evaluation" : {
+
+    }
+
+    
+}
