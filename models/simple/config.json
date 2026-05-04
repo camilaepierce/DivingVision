@@ -1,0 +1,34 @@
+{
+  "standard": {
+    "name": "simple"
+  },
+  "training": {
+    "epochs": 5,
+    "batch_size": 1,
+    "model": "simple",
+    "save_dir": "results/simple10",
+    "save_model": true
+  },
+  "dataset": {
+    "rgb_data": "data/Diving48_rgb",
+    "train_split": "models/simple/train_split.json",
+    "test_split": "models/simple/test_split.json"
+  },
+  "evaluation": {},
+  "labels": {
+    "categories": [
+      "Armstand",
+      "Backward",
+      "Forward",
+      "Inward",
+      "Reverse"
+    ],
+    "label_map": {
+      "0": "Armstand",
+      "1": "Backward",
+      "2": "Forward",
+      "3": "Inward",
+      "4": "Reverse"
+    }
+  }
+}

@@ -4,15 +4,38 @@
     },
 
     "training" : {
+        "epochs" : 5,
+        "batch_size": 8,
+        "model": "SimpleCNN",
+        "save_dir": "results/",
+        "save_model": true
+    },
+
+    "dataset" : {
         "rgb_data": "../data/Diving48_rgb.tar.gz",
         "flow_data": "../data/Diving48_flow.tar.gz",
-        "data_split" : "",
-        "epochs" : 50
+        "test_split" : "../data/Diving48_V2_test.json",
+        "train_split" : "../data/Diving48_V2_train.json"
     },
 
     "evaluation" : {
 
-    }
+    },
 
-    
+    "labels" : {
+        "categories": [
+            "Armstand",
+            "Backward",
+            "Forward",
+            "Inward",
+            "Reverse"
+        ],
+        "label_map": {
+            "0": "Armstand",
+            "1": "Backward",
+            "2": "Forward",
+            "3": "Inward",
+            "4": "Reverse"
+        }
+    }
 }
