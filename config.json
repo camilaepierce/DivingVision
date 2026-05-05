@@ -1,12 +1,12 @@
 {   
     "standard" : {   
-        "name" : "Initial"
+        "name" : "heavy"
     },
 
     "training" : {
-        "epochs" : 5,
-        "batch_size": 8,
-        "model": "SimpleCNN",
+        "epochs" : 50,
+        "batch_size": 20,
+        "model": "heavy",
         "save_dir": "results/",
         "save_model": true
     },
