@@ -8,7 +8,7 @@ import torch
 from src.config import DivingConfig
 from src.dataloader import create_loaders
 from src.training import train_model
-from torch import nn
+from torch import nn, save
 
 
 def _load_model_from_subfolder(model_name: str, cfg_obj: DivingConfig = None):
@@ -103,28 +103,10 @@ def main(model_name: str = None, config_path: str = None):
     if model_name:
         model = _load_model_from_subfolder(model_name, cfg_obj)
     else:
-        # fallback to default model in models/model.py
-        default_model_path = Path("models") / "model.py"
-        if default_model_path.exists():
-            # import the shared file
-            spec = importlib.util.spec_from_file_location("models.model", str(default_model_path))
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            # try to find any nn.Module class
-            model = None
-            for name, obj in inspect.getmembers(mod, inspect.isclass):
-                try:
-                    if issubclass(obj, nn.Module) and obj is not nn.Module:
-                        model = obj()
-                        break
-                except Exception:
-                    continue
-            if model is None:
-                raise RuntimeError("No default model found in models/model.py")
-        else:
-            raise RuntimeError("No model specified and no default model found")
+        raise RuntimeError("No model specified and no default model found")
 
     model = model.to(device)
+    print("Begin training model")
     model = train_model(
         model,
         train_loader,
@@ -134,7 +116,9 @@ def main(model_name: str = None, config_path: str = None):
         visualize_history=True,
         history_save_path=history_save_path,
     )
-
+    save_settings = cfg_obj.get_save_settings()
+    if save_settings["save_model"]:
+        save(model.state_dict(), save_settings["save_dir"]+"/"+ cfg_obj.get_model_name() + ".pt")
     return model
 
 

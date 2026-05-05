@@ -1,18 +1,18 @@
 {
   "standard": {
-    "name": "simple"
+    "name": "moderate"
   },
   "training": {
-    "epochs": 5,
-    "batch_size": 1,
-    "model": "simple",
-    "save_dir": "results/simple10",
+    "epochs": 10,
+    "batch_size": 16,
+    "model": "moderate",
+    "save_dir": "results/moderate",
     "save_model": true
   },
   "dataset": {
     "rgb_data": "data/Diving48_rgb",
-    "train_split": "models/simple/train_split.json",
-    "test_split": "models/simple/test_split.json"
+    "train_split": "models/moderate/train_split.json",
+    "test_split": "models/moderate/test_split.json"
   },
   "evaluation": {},
   "labels": {

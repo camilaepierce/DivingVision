@@ -34,7 +34,8 @@ class DivingDataset(Dataset):
     Each json entry must contain: `vid_name`, `start_frame`, `end_frame`, `label`.
     
     Features:
-      - Frame resizing to 224x224 for efficiency
+            - Uniform sampling of 16 frames per sample
+            - Frame resizing to 224x224 for efficiency
       - Disk caching to avoid re-decoding
       - ImageNet normalization (can be disabled with normalize=False)
     """
@@ -44,11 +45,12 @@ class DivingDataset(Dataset):
     IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
     def __init__(self, data_config, split="train", transform=None, to_tensor=True, 
-                 frame_size=224, cache_dir=None, normalize=True):
+                 frame_size=224, num_frames=16, cache_dir=None, normalize=True):
         self.data_config = data_config
         self.transform = transform
         self.to_tensor = to_tensor
         self.frame_size = frame_size
+        self.num_frames = num_frames
         self.normalize = normalize
 
         self.rgb_source = data_config.get("rgb_data")
@@ -76,9 +78,34 @@ class DivingDataset(Dataset):
 
     def _get_cache_path(self, vid_name: str, start: int, end: int) -> str:
         """Generate cache file path for video frames."""
-        key = f"{vid_name}_{start}_{end}_{self.frame_size}"
+        key = f"{vid_name}_{start}_{end}_{self.frame_size}_{self.num_frames}"
         key_hash = hashlib.md5(key.encode()).hexdigest()
         return os.path.join(self.cache_dir, f"{key_hash}.pkl")
+
+    def _uniform_sample_frames(self, frames: torch.Tensor) -> torch.Tensor:
+        """Uniformly sample self.num_frames frames across the clip.
+
+        If the clip is shorter than the target length, frame indices are
+        repeated to preserve a fixed output size.
+        """
+        if frames.ndim < 4:
+            raise ValueError(f"Expected clip tensor with time dimension, got shape {frames.shape}")
+
+        total_frames = frames.shape[0]
+        if total_frames == 0:
+            raise ValueError("Cannot sample frames from an empty clip")
+
+        if total_frames == self.num_frames:
+            return frames
+
+        if total_frames == 1:
+            indices = np.zeros(self.num_frames, dtype=np.int64)
+        else:
+            indices = np.linspace(0, total_frames - 1, self.num_frames)
+            indices = np.round(indices).astype(np.int64)
+
+        indices = np.clip(indices, 0, total_frames - 1)
+        return frames[torch.from_numpy(indices)]
 
     def _load_from_cache(self, cache_path: str):
         """Load frames from disk cache."""
@@ -230,6 +257,9 @@ class DivingDataset(Dataset):
                         frames = torch.from_numpy(np.asarray(decoded_frames)).float()
             else:
                 frames = self._decode_with_cv2(video_source, start, end)
+
+            # Ensure a fixed number of uniformly sampled frames per sample.
+            frames = self._uniform_sample_frames(frames)
             
             # Save to cache for future use
             if isinstance(frames, torch.Tensor):

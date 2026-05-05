@@ -43,11 +43,10 @@ class DivingConfig():
         return self.get_training().get("model", None)
 
     def get_save_settings(self):
-        # save settings may be nested under training or a separate section
         train = self.get_training()
         return {
-            "save_dir": train.get("save_dir", self.config.get("results_dir", "results")),
-            "save_model": train.get("save_model", True),
+            "save_dir": train["save_dir"],
+            "save_model": train["save_model"]
         }
 
     def get_labels(self):

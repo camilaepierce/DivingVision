@@ -12,9 +12,9 @@ from src.visualize import BarGraphVisualizer
 def _prepare_batch(images):
     """Prepare a batch for image-based models.
 
-    If `images` is a list of variable-length clips or a tensor of clips
-    (B, T, H, W, C) this helper selects the middle frame from each clip
-    and returns a stacked tensor of shape (B, C, H, W).
+    Returns a tensor shaped either:
+    - (B, C, H, W) for single images
+    - (B, T, C, H, W) for clips
     """
     # If already a tensor of images (B, C, H, W) or (B, H, W, C)
     if isinstance(images, torch.Tensor):
@@ -29,15 +29,10 @@ def _prepare_batch(images):
         elif images.ndim == 5:
             # (B, T, H, W, C) or (B, T, C, H, W)
             if images.shape[-1] in (1, 3):
-                # (B, T, H, W, C)
-                t = images.shape[1] // 2
-                mid = images[:, t]
-                return mid.permute(0, 3, 1, 2).float()
+                # (B, T, H, W, C) -> (B, T, C, H, W)
+                return images.permute(0, 1, 4, 2, 3).float()
             elif images.shape[2] in (1, 3):
-                # (B, T, C, H, W)
-                t = images.shape[1] // 2
-                mid = images[:, t]
-                return mid.float()
+                return images.float()
 
     # If images is a list (variable-length clips)
     if isinstance(images, (list, tuple)):
@@ -51,20 +46,23 @@ def _prepare_batch(images):
                     s = torch.from_numpy(np.asarray(s)).float()
             # clip could be (T, H, W, C) or (T, C, H, W) or (H, W, C)
             if s.ndim == 4:
-                # (T, H, W, C)
-                t = s.shape[0] // 2
-                frame = s[t]
-                frame = frame.permute(2, 0, 1).float()
+                if s.shape[-1] in (1, 3):
+                    # (T, H, W, C) -> (T, C, H, W)
+                    frame = s.permute(0, 3, 1, 2).float()
+                elif s.shape[1] in (1, 3):
+                    # (T, C, H, W)
+                    frame = s.float()
+                else:
+                    raise ValueError(f"Unsupported clip shape: {s.shape}")
             elif s.ndim == 3:
                 # (H, W, C)
                 frame = s.permute(2, 0, 1).float()
-            elif s.ndim == 5:
-                # (B, T, H, W, C) unlikely per-sample, take mid
-                t = s.shape[1] // 2
-                frame = s[:, t].permute(2, 0, 1).float()
             else:
                 raise ValueError(f"Unsupported sample shape: {s.shape}")
             processed.append(frame)
+        first = processed[0]
+        if first.ndim == 3:
+            return torch.stack(processed, dim=0)
         return torch.stack(processed, dim=0)
 
     raise ValueError("Unsupported batch images format")
