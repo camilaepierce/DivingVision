@@ -91,13 +91,28 @@ def main(model_name: str = None, config_path: str = None):
         cfg_obj = DivingConfig(filename=config_path) if config_path else DivingConfig()
 
     data_cfg = cfg_obj.getDataConfig()
+    train_cfg = cfg_obj.get_training()
     batch_size = cfg_obj.get_batch_size()
     epochs = cfg_obj.get_epochs()
     save_settings = cfg_obj.get_save_settings()
     history_save_path = os.path.join(save_settings["save_dir"], "training_history.png")
 
+    num_workers = int(train_cfg.get("num_workers", 4))
+    pin_memory = bool(train_cfg.get("pin_memory", torch.cuda.is_available()))
+    learning_rate = float(train_cfg.get("learning_rate", 0.01))
+    use_mixed_precision = bool(train_cfg.get("use_mixed_precision", torch.cuda.is_available()))
+    eval_every = int(train_cfg.get("eval_every", 1))
+    max_eval_batches = train_cfg.get("max_eval_batches", None)
+    if max_eval_batches is not None:
+        max_eval_batches = int(max_eval_batches)
+
     # create dataloaders
-    train_loader, test_loader = create_loaders(data_cfg, batch_size=batch_size)
+    train_loader, test_loader = create_loaders(
+        data_cfg,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+    )
 
     # model and training
     if model_name:
@@ -115,6 +130,10 @@ def main(model_name: str = None, config_path: str = None):
         num_epochs=epochs,
         visualize_history=True,
         history_save_path=history_save_path,
+        learning_rate=learning_rate,
+        use_mixed_precision=use_mixed_precision,
+        eval_every=eval_every,
+        max_eval_batches=max_eval_batches,
     )
     save_settings = cfg_obj.get_save_settings()
     if save_settings["save_model"]:

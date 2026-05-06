@@ -69,15 +69,23 @@ def _prepare_batch(images):
 
 
 # Train model
-def _evaluate_accuracy(model, data_loader, device):
+def _evaluate_accuracy(model, data_loader, device, max_batches=None, use_mixed_precision=False):
     correct = 0
     total = 0
+    non_blocking = device.type == "cuda"
 
-    with torch.no_grad():
-        for images, labels in data_loader:
+    with torch.inference_mode():
+        for batch_idx, (images, labels) in enumerate(data_loader):
+            if max_batches is not None and batch_idx >= max_batches:
+                break
             imgs = _prepare_batch(images)
-            imgs, labels = imgs.to(device), labels.to(device)
-            outputs = model(imgs)
+            imgs = imgs.to(device, non_blocking=non_blocking)
+            labels = labels.to(device, non_blocking=non_blocking)
+            if use_mixed_precision:
+                with autocast():
+                    outputs = model(imgs)
+            else:
+                outputs = model(imgs)
             _, preds = torch.max(outputs, 1)
             total += labels.size(0)
             correct += (preds == labels).sum().item()
@@ -97,6 +105,8 @@ def train_model(
     learning_rate=0.01,
     gradient_accumulation_steps=1,
     use_mixed_precision=True,
+    eval_every=1,
+    max_eval_batches=None,
 ):
     """Train model with optimizations: GPU acceleration, mixed precision, SGD optimizer, LR scheduling.
     
@@ -116,8 +126,13 @@ def train_model(
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
+
     # Move model to device
     model = model.to(device)
+    non_blocking = device.type == "cuda"
+    use_mixed_precision = bool(use_mixed_precision and device.type == "cuda")
     
     # Use SGD with momentum (faster and more memory-efficient than Adam)
     optimizer = optim.SGD(model.parameters(), lr=learning_rate, momentum=0.9, weight_decay=1e-4)
@@ -138,15 +153,17 @@ def train_model(
     print(f"Training on device: {device}")
     print(f"Mixed precision: {use_mixed_precision}")
     print(f"Gradient accumulation steps: {gradient_accumulation_steps}")
+    print(f"Eval frequency (epochs): {eval_every}")
 
     model.train()
     for epoch in range(num_epochs):
         running_loss = 0.0
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
         
         for batch_idx, (images, labels) in enumerate(train_loader):
             imgs = _prepare_batch(images)
-            imgs, labels = imgs.to(device), labels.to(device)
+            imgs = imgs.to(device, non_blocking=non_blocking)
+            labels = labels.to(device, non_blocking=non_blocking)
             
             # Forward pass with mixed precision if enabled
             if use_mixed_precision:
@@ -170,7 +187,16 @@ def train_model(
                     scaler.update()
                 else:
                     optimizer.step()
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True)
+
+        # Flush gradients for the final partial accumulation window.
+        if len(train_loader) % gradient_accumulation_steps != 0:
+            if use_mixed_precision:
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
 
         # Learning rate scheduling
         scheduler.step()
@@ -182,16 +208,32 @@ def train_model(
         current_lr = optimizer.param_groups[0]['lr']
         print(f"Epoch {epoch+1}/{num_epochs}, Loss: {epoch_loss:.4f}, LR: {current_lr:.2e}")
 
-        if test_loader is not None:
+        should_eval = (
+            test_loader is not None
+            and ((epoch + 1) % max(1, int(eval_every)) == 0 or (epoch + 1) == num_epochs)
+        )
+        if should_eval:
             model.eval()
-            test_accuracy = _evaluate_accuracy(model, test_loader, device)
+            test_accuracy = _evaluate_accuracy(
+                model,
+                test_loader,
+                device,
+                max_batches=max_eval_batches,
+                use_mixed_precision=use_mixed_precision,
+            )
             test_accuracies.append(test_accuracy)
             print(f"Test accuracy: {test_accuracy*100:.2f}%")
             model.train()
 
     model.eval()
     if test_loader is not None and not test_accuracies:
-        accuracy = _evaluate_accuracy(model, test_loader, device)
+        accuracy = _evaluate_accuracy(
+            model,
+            test_loader,
+            device,
+            max_batches=max_eval_batches,
+            use_mixed_precision=use_mixed_precision,
+        )
         print(f"Test accuracy: {accuracy*100:.2f}%")
     elif test_loader is None:
         accuracy = 0.0

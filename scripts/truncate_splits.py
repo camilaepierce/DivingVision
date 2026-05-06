@@ -5,15 +5,17 @@ Usage: python tools/truncate_splits.py
 """
 import json
 from pathlib import Path
+import random
 
 ROOT = Path(__file__).resolve().parents[1]
-MOD = ROOT / 'models' / 'simple'
+MOD = ROOT / 'models' / 'fused'
 
 def truncate(path: Path, n: int):
     data = json.loads(path.read_text())
     if not isinstance(data, list):
         raise RuntimeError(f"Expected list in {path}")
     print(f"{path.name}: original {len(data)} entries")
+    random.shuffle(data)
     truncated = data[:n]
     path.write_text(json.dumps(truncated, indent=2))
     print(f"{path.name}: written {len(truncated)} entries")
