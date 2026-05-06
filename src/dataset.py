@@ -276,6 +276,12 @@ class DivingDataset(Dataset):
         # optional transform per-clip
         if self.transform is not None:
             frames = self.transform(frames)
+        
+        # Ensure frames are in (T, C, H, W) format for PyTorch Conv3d
+        # frames should be (T, H, W, C) after decoding, normalize it if needed
+        if frames.ndim == 4 and frames.shape[-1] == 3:
+            # Convert from (T, H, W, C) to (T, C, H, W)
+            frames = frames.permute(0, 3, 1, 2).contiguous()
 
         return frames, torch.tensor(label, dtype=torch.long)
     

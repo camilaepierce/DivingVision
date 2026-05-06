@@ -12,10 +12,10 @@
     },
 
     "dataset" : {
-        "rgb_data": "../data/Diving48_rgb.tar.gz",
-        "flow_data": "../data/Diving48_flow.tar.gz",
-        "test_split" : "../data/Diving48_V2_test.json",
-        "train_split" : "../data/Diving48_V2_train.json"
+        "rgb_data": "data/Diving48_rgb.tar.gz",
+        "flow_data": "data/Diving48_flow.tar.gz",
+        "test_split" : "data/Diving48_V2_test.json",
+        "train_split" : "data/Diving48_V2_train.json"
     },
 
     "evaluation" : {

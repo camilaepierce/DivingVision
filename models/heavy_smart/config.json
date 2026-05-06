@@ -1,18 +1,18 @@
 {
   "standard": {
-    "name": "heavy"
+    "name": "heavy_smart"
   },
   "training": {
     "epochs": 20,
     "batch_size": 20,
-    "model": "heavy",
-    "save_dir": "results/heavy",
+    "model": "heavy_smart",
+    "save_dir": "results/heavy_smart",
     "save_model": true
   },
   "dataset": {
     "rgb_data": "data/Diving48_rgb",
-    "train_split": "models/heavy/train_split.json",
-    "test_split": "models/heavy/test_split.json"
+    "train_split": "models/heavy_smart/train_split.json",
+    "test_split": "models/heavy_smart/test_split.json"
   },
   "evaluation": {},
   "labels": {
