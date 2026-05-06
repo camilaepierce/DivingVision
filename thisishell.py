@@ -33,6 +33,9 @@ NUM_CLASSES = 48
 EPOCHS = 10
 BATCH_SIZE = 32
 NUM_WORKERS = 4
+
+# Number of SimCLR pretraining epochs to run before supervised fine-tuning
+PRETRAIN_EPOCHS = 10
 PRETRAIN_EPOCHS = 5
 
 LR = 3e-5
@@ -835,13 +838,16 @@ def compute_final_metrics(eval_out, output_dir):
 # %%
 # %% Train/evaluate one sweep run
 
-def train_one_epoch(model, loader, optimizer, scaler, lambda_soft_ce, lambda_contrastive):
+def train_one_epoch(model, loader, optimizer, scaler):
+    """Single supervised epoch using only hard cross-entropy loss.
+
+    Soft semantic targets and semantic contrastive losses are intentionally
+    removed from the supervised loss as requested.
+    """
     model.train()
 
     total_loss = 0.0
     total_hard_loss = 0.0
-    total_soft_loss = 0.0
-    total_contrastive_loss = 0.0
     total_top1 = 0
     total_top5 = 0
     total_seen = 0
@@ -859,28 +865,8 @@ def train_one_epoch(model, loader, optimizer, scaler, lambda_soft_ce, lambda_con
 
             hard_loss = criterion(logits, labels)
 
-            if lambda_soft_ce > 0:
-                batch_soft_targets = SOFT_TARGETS[labels]
-                soft_loss = soft_cross_entropy(logits, batch_soft_targets)
-            else:
-                soft_loss = logits.new_tensor(0.0)
+            loss = hard_loss
 
-            if lambda_contrastive > 0:
-                contrastive_loss = semantic_contrastive_loss(
-                    feats,
-                    labels,
-                    SIM_MATRIX,
-                    temperature=CONTRASTIVE_TEMP,
-                )
-            else:
-                contrastive_loss = logits.new_tensor(0.0)
-
-            loss = (
-                hard_loss
-                + lambda_soft_ce * soft_loss
-                + lambda_contrastive * contrastive_loss
-            )
-            
         scaler.scale(loss).backward()
         scaler.step(optimizer)
         scaler.update()
@@ -891,8 +877,6 @@ def train_one_epoch(model, loader, optimizer, scaler, lambda_soft_ce, lambda_con
         bs = labels.size(0)
         total_loss += loss.item() * bs
         total_hard_loss += hard_loss.item() * bs
-        total_soft_loss += soft_loss.item() * bs
-        total_contrastive_loss += contrastive_loss.item() * bs
         total_top1 += (preds == labels).sum().item()
         total_top5 += (top5 == labels[:, None]).any(dim=1).sum().item()
         total_seen += bs
@@ -902,8 +886,6 @@ def train_one_epoch(model, loader, optimizer, scaler, lambda_soft_ce, lambda_con
     return {
         "train_loss": total_loss / total_seen,
         "train_hard_loss": total_hard_loss / total_seen,
-        "train_soft_loss": total_soft_loss / total_seen,
-        "train_contrastive_loss": total_contrastive_loss / total_seen,
         "train_top1": total_top1 / total_seen,
         "train_top5": total_top5 / total_seen,
         "videos_per_sec": total_seen / elapsed,
@@ -963,8 +945,6 @@ def run_sweep(config):
             train_loader,
             optimizer,
             scaler,
-            lambda_soft_ce,
-            lambda_contrastive,
         )
 
         eval_out = collect_eval_outputs(model, test_loader, max_umap_points=0)
@@ -972,8 +952,6 @@ def run_sweep(config):
         row = {
             "run_name": run_name,
             "epoch": epoch,
-            "lambda_soft_ce": lambda_soft_ce,
-            "lambda_contrastive": lambda_contrastive,
             **train_metrics,
             "test_loss": eval_out["loss"],
             "test_top1": eval_out["top1"],
@@ -985,14 +963,10 @@ def run_sweep(config):
         print(
             f"epoch={epoch:03d} "
             f"train_loss={row['train_loss']:.4f} "
-            f"hard={row['train_hard_loss']:.4f} "
-            f"soft={row['train_soft_loss']:.4f} "
-            f"contrastive={row['train_contrastive_loss']:.4f} "
             f"train_top1={row['train_top1']:.4f} "
             f"train_top5={row['train_top5']:.4f} "
             f"test_top1={row['test_top1']:.4f} "
-            f"test_top5={row['test_top5']:.4f} "
-            f"videos/sec={row['videos_per_sec']:.2f}"
+            f"test_top5={row['test_top5']:.4f}"
         )
 
         torch.save(
@@ -1074,27 +1048,105 @@ def run_sweep(config):
 # %%
 # %% Run all sweeps
 
-all_summaries = []
+def run_pretrain_and_finetune(pretrain_epochs: int, finetune_epochs: int):
+    output_dir = OUTPUT_ROOT / "simclr_single_run"
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-for config in SWEEP_CONFIGS:
-    summary = run_sweep(config)
-    all_summaries.append(summary)
+    model = ResNet50MeanPoolClassifier(num_classes=NUM_CLASSES, enable_simclr=True).to(DEVICE)
 
-save_csv(
-    OUTPUT_ROOT / "best_top1_top5_comparison_table.csv",
-    all_summaries,
-    list(all_summaries[0].keys()),
-)
+    # ----- Pretraining -----
+    if pretrain_epochs > 0:
+        print(f"Starting SimCLR pretraining for {pretrain_epochs} epochs...")
+        pretrain_optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
+        for p_ep in range(1, pretrain_epochs + 1):
+            stats = train_epoch_simclr(model, train_loader, pretrain_optimizer, DEVICE)
+            print(f"Pretrain epoch={p_ep}/{pretrain_epochs} contrastive_loss={stats['contrastive_loss']:.4f}")
+            torch.save(
+                {
+                    "epoch": p_ep,
+                    "model_state": model.state_dict(),
+                    "optimizer_state": pretrain_optimizer.state_dict(),
+                    "mode": "pretrain",
+                },
+                output_dir / f"pretrain_epoch_{p_ep:03d}.pt",
+            )
+        # save final pretrained weights
+        torch.save(model.state_dict(), output_dir / "pretrained_model.pt")
+        print("Pretraining complete.\n")
 
-print("\nBest top-1 / top-5 comparison:")
-for row in all_summaries:
-    print(
-        f"{row['run_name']}: "
-        f"best_epoch={row['best_epoch']} "
-        f"best_top1={row['best_top1']:.4f} "
-        f"best_top5={row['best_top5_at_best_top1']:.4f} "
-        f"severity={row['mean_error_severity']:.4f}"
-    )
+    # ----- Supervised fine-tuning -----
+    optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
+    scaler = torch.cuda.amp.GradScaler(enabled=(DEVICE.type == "cuda"))
 
-print(f"\nAll outputs saved to: {OUTPUT_ROOT}")
+    best_top1 = -1.0
+    best_top5 = -1.0
+    best_epoch = -1
+    history = []
+
+    for epoch in range(1, finetune_epochs + 1):
+        train_metrics = train_one_epoch(model, train_loader, optimizer, scaler)
+
+        eval_out = collect_eval_outputs(model, test_loader, max_umap_points=0)
+
+        row = {
+            "epoch": epoch,
+            **train_metrics,
+            "test_loss": eval_out["loss"],
+            "test_top1": eval_out["top1"],
+            "test_top5": eval_out["top5"],
+        }
+
+        history.append(row)
+
+        print(
+            f"epoch={epoch:03d} "
+            f"train_loss={row['train_loss']:.4f} "
+            f"train_top1={row['train_top1']:.4f} "
+            f"train_top5={row['train_top5']:.4f} "
+            f"test_top1={row['test_top1']:.4f} "
+            f"test_top5={row['test_top5']:.4f}"
+        )
+
+        torch.save(
+            {
+                "epoch": epoch,
+                "model_state": model.state_dict(),
+                "optimizer_state": optimizer.state_dict(),
+            },
+            output_dir / "last.pt",
+        )
+
+        if eval_out["top1"] > best_top1:
+            best_top1 = eval_out["top1"]
+            best_top5 = eval_out["top5"]
+            best_epoch = epoch
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "model_state": model.state_dict(),
+                    "optimizer_state": optimizer.state_dict(),
+                    "best_top1": best_top1,
+                    "best_top5": best_top5,
+                },
+                output_dir / "best.pt",
+            )
+            print(f"Saved best checkpoint: top1={best_top1:.4f}, top5={best_top5:.4f}")
+
+    if len(history) > 0:
+        save_csv(output_dir / "history.csv", history, list(history[0].keys()))
+        plot_history(history, output_dir)
+
+    # final evaluation and metrics
+    if (output_dir / "best.pt").exists():
+        ckpt = torch.load(output_dir / "best.pt", map_location=DEVICE)
+        model.load_state_dict(ckpt["model_state"])
+
+    final_eval = collect_eval_outputs(model, test_loader, max_umap_points=UMAP_MAX_POINTS)
+    compute_final_metrics(final_eval, output_dir)
+
+    print(f"Run complete. Outputs saved to: {output_dir}")
+
+
+if __name__ == "__main__":
+    run_pretrain_and_finetune(PRETRAIN_EPOCHS, EPOCHS)
 
