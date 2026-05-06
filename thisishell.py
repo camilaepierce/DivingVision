@@ -526,46 +526,34 @@ def nt_xent_loss(z_i: torch.Tensor, z_j: torch.Tensor, temperature: float = 0.07
     return loss.mean()
 
 
-def train_epoch_simclr(model, train_loader, optimizer, device, augmentation_level="moderate"):
-    """Train one epoch of SimCLR pretraining using the model's projection head.
-
-    If the model does not have a projection head, one will be created and its
-    parameters added to the optimizer.
+def train_epoch_pretrain_semantic(model, train_loader, optimizer, device, augmentation_level="moderate"):
+    """Pretrain one epoch using semantic_contrastive_loss on augmented videos.
+    
+    Features are trained to be closer for semantically similar classes.
     """
     model.train()
     total_loss = 0.0
     n = 0
 
-    # ensure model has projection head
-    if not hasattr(model, "projection_head"):
-        feature_dim = model.backbone.fc.in_features if hasattr(model.backbone, "fc") else model.backbone.fc.in_features
-        model.projection_head = ProjectionHead(feature_dim, hidden_dim=512, output_dim=getattr(model, "projection_dim", 128))
-        # add projection head params to optimizer
-        try:
-            optimizer.add_param_group({"params": list(model.projection_head.parameters())})
-        except Exception:
-            # fallback: recreate optimizer (best practice is to supply an optimizer that includes all params)
-            raise RuntimeError("Optimizer must support adding param groups or be recreated to include projection head parameters")
-
-    model.projection_head.train()
-
-    for videos, _labels in tqdm(train_loader, desc="SimCLR pretrain", leave=False):
+    for videos, labels in tqdm(train_loader, desc="Semantic pretrain", leave=False):
         videos = videos.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
 
-        # create two augmented views
-        v1 = augment_video_simclr(videos, augmentation_level)
-        v2 = augment_video_simclr(videos, augmentation_level)
+        # Augment videos
+        videos_aug = augment_video_simclr(videos, augmentation_level)
 
         optimizer.zero_grad(set_to_none=True)
 
-        # get representations
-        _l1, feats1 = model(v1)
-        _l2, feats2 = model(v2)
+        # Forward pass on augmented videos
+        _logits, feats = model(videos_aug)
 
-        z1 = model.projection_head(feats1)
-        z2 = model.projection_head(feats2)
-
-        loss = nt_xent_loss(z1, z2, temperature=CONTRASTIVE_TEMP)
+        # Compute semantic contrastive loss
+        loss = semantic_contrastive_loss(
+            feats,
+            labels,
+            SIM_MATRIX,
+            temperature=CONTRASTIVE_TEMP,
+        )
 
         loss.backward()
         optimizer.step()
@@ -573,7 +561,7 @@ def train_epoch_simclr(model, train_loader, optimizer, device, augmentation_leve
         total_loss += loss.item()
         n += 1
 
-    return {"contrastive_loss": total_loss / max(1, n), "num_batches": n}
+    return {"loss": total_loss / max(1, n), "num_batches": n}
 
 
 
@@ -839,15 +827,14 @@ def compute_final_metrics(eval_out, output_dir):
 # %% Train/evaluate one sweep run
 
 def train_one_epoch(model, loader, optimizer, scaler):
-    """Single supervised epoch using only hard cross-entropy loss.
+    """Finetune supervised epoch using semantic_contrastive_loss on frozen backbone features.
 
-    Soft semantic targets and semantic contrastive losses are intentionally
-    removed from the supervised loss as requested.
+    The backbone is frozen; only the classifier is trained.
+    Backbone features are trained to be closer for semantically similar classes.
     """
     model.train()
 
     total_loss = 0.0
-    total_hard_loss = 0.0
     total_top1 = 0
     total_top5 = 0
     total_seen = 0
@@ -863,20 +850,24 @@ def train_one_epoch(model, loader, optimizer, scaler):
         with torch.cuda.amp.autocast(enabled=(DEVICE.type == "cuda")):
             logits, feats = model(videos)
 
-            hard_loss = criterion(logits, labels)
-
-            loss = hard_loss
+            # Use semantic contrastive loss on features
+            loss = semantic_contrastive_loss(
+                feats,
+                labels,
+                SIM_MATRIX,
+                temperature=CONTRASTIVE_TEMP,
+            )
 
         scaler.scale(loss).backward()
         scaler.step(optimizer)
         scaler.update()
 
+        # Compute accuracy from logits for reporting
         top5 = logits.topk(5, dim=1).indices
         preds = top5[:, 0]
 
         bs = labels.size(0)
         total_loss += loss.item() * bs
-        total_hard_loss += hard_loss.item() * bs
         total_top1 += (preds == labels).sum().item()
         total_top5 += (top5 == labels[:, None]).any(dim=1).sum().item()
         total_seen += bs
@@ -885,7 +876,6 @@ def train_one_epoch(model, loader, optimizer, scaler):
 
     return {
         "train_loss": total_loss / total_seen,
-        "train_hard_loss": total_hard_loss / total_seen,
         "train_top1": total_top1 / total_seen,
         "train_top5": total_top5 / total_seen,
         "videos_per_sec": total_seen / elapsed,
@@ -1054,13 +1044,13 @@ def run_pretrain_and_finetune(pretrain_epochs: int, finetune_epochs: int):
 
     model = ResNet50MeanPoolClassifier(num_classes=NUM_CLASSES, enable_simclr=True).to(DEVICE)
 
-    # ----- Pretraining -----
+    # ----- Pretraining with semantic contrastive loss -----
     if pretrain_epochs > 0:
-        print(f"Starting SimCLR pretraining for {pretrain_epochs} epochs...")
+        print(f"Starting semantic pretraining for {pretrain_epochs} epochs...")
         pretrain_optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
         for p_ep in range(1, pretrain_epochs + 1):
-            stats = train_epoch_simclr(model, train_loader, pretrain_optimizer, DEVICE)
-            print(f"Pretrain epoch={p_ep}/{pretrain_epochs} contrastive_loss={stats['contrastive_loss']:.4f}")
+            stats = train_epoch_pretrain_semantic(model, train_loader, pretrain_optimizer, DEVICE)
+            print(f"Pretrain epoch={p_ep}/{pretrain_epochs} loss={stats['loss']:.4f}")
             torch.save(
                 {
                     "epoch": p_ep,
@@ -1074,8 +1064,15 @@ def run_pretrain_and_finetune(pretrain_epochs: int, finetune_epochs: int):
         torch.save(model.state_dict(), output_dir / "pretrained_model.pt")
         print("Pretraining complete.\n")
 
-    # ----- Supervised fine-tuning -----
-    optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
+    # ----- Freeze backbone after pretraining -----
+    print("Freezing backbone weights...")
+    for param in model.backbone.parameters():
+        param.requires_grad = False
+    print("Backbone frozen. Only classifier will be trained during fine-tuning.\n")
+
+    # ----- Supervised fine-tuning (only classifier head) -----
+    # Only optimize classifier since backbone is frozen
+    optimizer = torch.optim.AdamW(model.classifier.parameters(), lr=LR)
     scaler = torch.cuda.amp.GradScaler(enabled=(DEVICE.type == "cuda"))
 
     best_top1 = -1.0
